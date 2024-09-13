@@ -1,5 +1,6 @@
 (import (srfi 1) (srfi 18) (srfi 4) (chicken bitwise) (chicken file posix)
         (chicken foreign) (chicken locative) (chicken type))
+(import (chicken random))
 
 (define-syntax → (syntax-rules () ((_ . ω) (begin . ω))))
 (define-syntax ∃ (syntax-rules () ((_ . α) (let* . α))))
@@ -105,6 +106,16 @@
 (: silence (fill fixnum -> fixnum))
 (← (silence f ω) (f I (λ (_) (values 0 0)) ω))
 
+(: noise (fill fixnum -> fixnum))
+(← (noise f ω)
+  (f I (λ (α)
+         (values (inexact->exact (floor (* α (pseudo-random-integer 65535))))
+                 (inexact->exact (floor (* α (pseudo-random-integer 65535))))))
+     ω)) 
+
+(: volume (number -> void))
+(← (volume n) (thread-specific-set! (current-thread) n))
+
 (: clock (condition-variable fixnum -> void))
 (← (clock τ div)
   (letrec* ((start (time->seconds (current-time)))
@@ -133,10 +144,10 @@
                (receive (i _)
                  (file-select fileno/stdin #f 0)
                  (? i (print (eval (read)))))
-               (silence (↑ ω) 0) ; replace eventually
+               (noise (↑ ω) (thread-specific (current-thread)))
                (mutex-unlock! lock τ)
                (▽ (↓ ω)))))))
-    (writer buffer*) ; fill ahead
+    (thread-specific-set! (current-thread) 0) ; volume zero
     (▽ buffers)
     (closer)
     (free-number-vector buffer)))

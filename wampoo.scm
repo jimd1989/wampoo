@@ -24,13 +24,17 @@
     int driver;
     ao_sample_format fmt;
     ao_initialize();
+    ao_option o;
+    o.key = "buffer_time";
+    o.value = "100"; /* Parameterize this later */
+    o.next = NULL;
     driver = ao_default_driver_id();
     memset(&fmt, 0, sizeof(fmt));
     fmt.bits = 16;
     fmt.channels = 2;
     fmt.byte_format = AO_FMT_LITTLE;
     fmt.rate = rate;
-    return ao_open_live(driver, &fmt, NULL);
+    return ao_open_live(driver, &fmt, &o);
   }
 
   void close_audio(ao_device *d) {

@@ -1,7 +1,6 @@
 (import (srfi 1) (srfi 18) (srfi 4) (chicken bitwise) (chicken condition)
         (chicken file posix) (chicken foreign) (chicken locative)
         (chicken type))
-(import (chicken random))
 
 (define-syntax → (syntax-rules () ((_ . ω) (begin . ω))))
 (define-syntax ∃ (syntax-rules () ((_ . α) (let* . α))))
@@ -49,12 +48,15 @@
 (← write-audio (foreign-lambda void "ao_play" ao nonnull-c-pointer int))
 (← close-audio (foreign-lambda void "close_audio" ao))
 
-(define-type buffer u64vector)
+(define-type buffer u32vector)
 (define-type fill (('a -> 'a) ('a -> fixnum fixnum) 'a -> 'a))
 (define-type condition-variable (struct condition-variable))
 (define-type audio-data (list-of (list symbol number)))
 (define-type audio (list (list symbol (pointer -> void))
                          (list symbol (-> void))))
+(define-type state (list (list symbol ('a -> 'a))
+                         (list symbol ('a -> fixnum fixnum))
+                         (list symbol 'a)))
 
 (: audio-data (fixnum fixnum fixnum --> audio-data))
 (← (audio-data rate resolution blocks)
@@ -74,6 +76,9 @@
 (: ∈ (symbol (list-of (list symbol 'a)) --> 'a))
 (← (∈ α ω) (↑↓ (assoc α ω)))
 
+(: ∈←→ (symbol 'a (list-of (list symbol 'a)) --> (list-of (list symbol 'a))))
+(← (∈←→ k v ω) (∀ (λ (α) (? (eq? (↑ α) k) `(,k ,v) α)) ω))
+
 (: make-audio (audio-data -> audio))
 (← (make-audio α)
   (∃ ((ao (open-audio (∈ 'sample-rate α)))
@@ -88,38 +93,24 @@
       (b3 (bitwise-ior b2 (arithmetic-shift (bitwise-and r 255) 8))))
     (bitwise-ior b3 (arithmetic-shift r -8))))
 
-(: buffer⇒ (fixnum fixnum u64vector ('a -> 'a) ('a -> fixnum fixnum) 'a -> 'a))
+(: buffer⇒ (fixnum fixnum u32vector ('a -> 'a) ('a -> fixnum fixnum) 'a -> 'a))
 (← (buffer⇒ n m ω f g α)
   (? (= n m) α
-             (∃ ((α1 (f α))
-                 (α2 (f α1))
-                 (s1 (receive (l r) (g α1) (stereo-sample l r)))
-                 (s2 (receive (l r) (g α2) (stereo-sample l r)))
-                 (s (bitwise-ior (arithmetic-shift s1 32) s2)))
-               (u64vector-set! ω n s)
-               (buffer⇒ (+ n 1) m ω f g α2))))
+    (∃ ((a (f α)) (s (receive (l r) (g a) (stereo-sample l r))))
+      (u32vector-set! ω n s)
+      (buffer⇒ (+ n 1) m ω f g a))))
 
 (: windows ((list-of fixnum) --> (list-of (list fixnum fixnum))))
 (← (windows ω) (↓ (⇐ (λ (acc x) `(,x ,@(↓ acc) ,(list (↑ acc) x))) '(0) ω)))
 
-(: buffer-blocks (u64vector fixnum --> (list-of fill)))
+(: buffer-blocks (u32vector fixnum --> (list-of fill)))
 (← (buffer-blocks ω n)
-  (∃ ((size (/ (u64vector-length ω) n))
+  (∃ ((size (/ (u32vector-length ω) n))
       (slices (windows (ι n size size))))
     (∀ (λ (nm) (λ (f g α) (buffer⇒ (↑ nm) (↑↓ nm) ω f g α))) slices)))
 
 (: silence (fill fixnum -> fixnum))
 (← (silence f ω) (f I (λ (_) (values 0 0)) ω))
-
-(: noise (fill fixnum -> fixnum))
-(← (noise f ω)
-  (f I (λ (α)
-         (values (inexact->exact (floor (* α (pseudo-random-integer 65535))))
-                 (inexact->exact (floor (* α (pseudo-random-integer 65535))))))
-     ω)) 
-
-(: volume (number -> void))
-(← (volume n) (thread-specific-set! (current-thread) n))
 
 (: clock (condition-variable fixnum -> void))
 (← (clock τ div)
@@ -131,6 +122,24 @@
                       (▽ (+ n 1)))))
     (▽ 0)))
 
+(: DEFAULT-STATE state)
+(← DEFAULT-STATE `((f ,I) (g ,(λ (_) (values 0 0))) (acc 0)))
+
+(: state! ('a -> void))
+(← (state! ω) (thread-specific-set! (current-thread) ω))
+
+(: state⇒ (('a -> 'b) -> void))
+(← (state⇒ f) (state! (f (thread-specific (current-thread)))))
+
+(: set-f! (('a -> 'a) -> void))
+(← (set-f! f) (state⇒ (λ (ω) (∈←→ 'f f ω))))
+
+(: set-g! (('a -> fixnum fixnum) -> void))
+(← (set-g! g) (state⇒ (λ (ω) (∈←→ 'g g ω))))
+
+(: set-acc! ('a -> void))
+(← (set-acc! acc) (state⇒ (λ (ω) (∈←→ 'acc acc ω))))
+
 (: wampoo (condition-variable audio-data audio -> void))
 (← (wampoo τ info audio)
   (letrec*
@@ -138,8 +147,8 @@
      (writer (∈ 'writer audio))
      (closer (∈ 'closer audio))
      (blocks (∈ 'write-blocks info))
-     (bufsize (/ (∈ 'write-buf-bytes info) 8))
-     (buffer (make-u64vector bufsize 0 #f #f))
+     (bufsize (/ (∈ 'write-buf-bytes info) 4))
+     (buffer (make-u32vector bufsize 0 #f #f))
      (buffer* (make-locative buffer))
      (buffers (buffer-blocks buffer blocks))
      (▽ (λ (ω)
@@ -152,10 +161,13 @@
                    (with-exception-handler 
                      (λ (e) (print 'err) (cc (void)))
                      (λ () (? i (print (eval (read)))))))))
-               (noise (↑ ω) (thread-specific (current-thread)))
+               (∃ ((state (thread-specific (current-thread)))
+                   (f (∈ 'f state)) (g (∈ 'g state)) (acc (∈ 'acc state))
+                   (fill-buffer (↑ ω)))
+                  (state! (∈←→ 'acc (fill-buffer f g acc) state)))
                (mutex-unlock! lock τ)
                (▽ (↓ ω)))))))
-    (thread-specific-set! (current-thread) 0) ; volume zero
+    (state! DEFAULT-STATE)
     (▽ buffers)
     (closer)
     (free-number-vector buffer)))

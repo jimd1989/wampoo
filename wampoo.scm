@@ -15,6 +15,8 @@
 
 (← ((□ display) (⇐ foldl) (π 3.141592653589793) (ι iota) (∀ map) (I identity)))
 (← ((∀∀ for-each) (↑ car) (↓ cdr) (↑↓ cadr) (∅ '()) (∅? null?) (K constantly)))
+(← ((<< arithmetic-shift) (>> (λ (α ω) (<< α (* -1 ω)))) (¦ bitwise-ior)))
+(← ((& bitwise-and)))
 
 #>
   #include <ao/ao.h>
@@ -88,10 +90,7 @@
 
 (: stereo-sample (fixnum fixnum --> fixnum))
 (← (stereo-sample l r)
-  (∃ ((b1 (arithmetic-shift (bitwise-and l 255) 24))
-      (b2 (bitwise-ior b1 (arithmetic-shift (arithmetic-shift l -8) 16)))
-      (b3 (bitwise-ior b2 (arithmetic-shift (bitwise-and r 255) 8))))
-    (bitwise-ior b3 (arithmetic-shift r -8))))
+  (¦ (<< (& l 255) 24) (<< (>> l 8) 16) (<< (& r 255) 8) (>> r 8)))
 
 (: buffer⇒ (fixnum fixnum u32vector ('a -> 'a) ('a -> fixnum fixnum) 'a -> 'a))
 (← (buffer⇒ n m ω f g α)

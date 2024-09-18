@@ -52,6 +52,7 @@
 
 (define-type buffer u32vector)
 (define-type fill (('a -> 'a) ('a -> fixnum fixnum) 'a -> 'a))
+(define-type mutex (struct mutex))
 (define-type condition-variable (struct condition-variable))
 (define-type audio-data (list-of (list symbol number)))
 (define-type audio (list (list symbol (pointer -> void))
@@ -143,11 +144,10 @@
 (: audio-info (-> audio-data))
 (← (audio-info) (∈ 'info (thread-specific (current-thread))))
 
-(: wampoo (condition-variable audio-data audio -> void))
-(← (wampoo τ info audio)
+(: wampoo (mutex condition-variable audio-data audio -> void))
+(← (wampoo lock τ info audio)
   (letrec*
-    ((lock (make-mutex))
-     (writer (∈ 'writer audio))
+    ((writer (∈ 'writer audio))
      (closer (∈ 'closer audio))
      (blocks (∈ 'write-blocks info))
      (bufsize (/ (∈ 'write-buf-bytes info) 4))
@@ -179,11 +179,14 @@
 (: CLOCK-CHANNEL condition-variable)
 (← CLOCK-CHANNEL (make-condition-variable))
 
+(: AUDIO-LOCK mutex)
+(← AUDIO-LOCK (make-mutex))
+
 (← info (audio-data 48000 300 10))
 (← ao (make-audio info))
 (print info)
 (← clock-thread (make-thread (λ () (clock CLOCK-CHANNEL (∈ 'resolution info)))))
-(← wampoo-thread (make-thread (λ () (wampoo CLOCK-CHANNEL info ao))))
+(← wampoo-thread (make-thread (λ () (wampoo AUDIO-LOCK CLOCK-CHANNEL info ao))))
 (thread-start! clock-thread)
 (thread-start! wampoo-thread)
 (thread-join! wampoo-thread)

@@ -58,7 +58,8 @@
                          (list symbol (-> void))))
 (define-type state (list (list symbol ('a -> 'a))
                          (list symbol ('a -> fixnum fixnum))
-                         (list symbol 'a)))
+                         (list symbol 'a)
+                         (list symbol audio-data)))
 
 (: audio-data (fixnum fixnum fixnum --> audio-data))
 (← (audio-data rate resolution blocks)
@@ -108,9 +109,6 @@
       (slices (windows (ι n size size))))
     (∀ (λ (nm) (λ (f g α) (buffer⇒ (↑ nm) (↑↓ nm) ω f g α))) slices)))
 
-(: silence (fill fixnum -> fixnum))
-(← (silence f ω) (f I (λ (_) (values 0 0)) ω))
-
 (: clock (condition-variable fixnum -> void))
 (← (clock τ div)
   (letrec* ((start (time->seconds (current-time)))
@@ -122,7 +120,7 @@
     (▽ 0)))
 
 (: DEFAULT-STATE state)
-(← DEFAULT-STATE `((f ,I) (g ,(λ (_) (values 0 0))) (acc 0)))
+(← DEFAULT-STATE `((f ,I) (g ,(λ (_) (values 0 0))) (acc 0) (info ())))
 
 (: state! ('a -> void))
 (← (state! ω) (thread-specific-set! (current-thread) ω))
@@ -138,6 +136,12 @@
 
 (: set-acc! ('a -> void))
 (← (set-acc! acc) (state⇒ (λ (ω) (∈←→ 'acc acc ω))))
+
+(: set-info! ('a -> void))
+(← (set-info! α) (state⇒ (λ (ω) (∈←→ 'info α ω))))
+
+(: audio-info (-> audio-data))
+(← (audio-info) (∈ 'info (thread-specific (current-thread))))
 
 (: wampoo (condition-variable audio-data audio -> void))
 (← (wampoo τ info audio)
@@ -167,6 +171,7 @@
                (mutex-unlock! lock τ)
                (▽ (↓ ω)))))))
     (state! DEFAULT-STATE)
+    (set-info! info)
     (▽ buffers)
     (closer)
     (free-number-vector buffer)))

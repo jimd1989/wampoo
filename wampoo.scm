@@ -50,7 +50,7 @@
 (← write-audio (foreign-lambda void "ao_play" ao nonnull-c-pointer int))
 (← close-audio (foreign-lambda void "close_audio" ao))
 
-(define-type buffer u32vector)
+(define-type buffer s16vector)
 (define-type fill (('a -> 'a) ('a -> fixnum fixnum) 'a -> 'a))
 (define-type mutex (struct mutex))
 (define-type condition-variable (struct condition-variable))
@@ -90,23 +90,21 @@
     `((writer ,(λ (ω) (write-audio ao ω size)))
       (closer ,(λ () (close-audio ao))))))
 
-(: stereo-sample (fixnum fixnum --> fixnum))
-(← (stereo-sample l r)
-  (¦ (<< (& l 255) 24) (<< (>> l 8) 16) (<< (& r 255) 8) (>> r 8)))
-
-(: buffer⇒ (fixnum fixnum u32vector ('a -> 'a) ('a -> fixnum fixnum) 'a -> 'a))
+(: buffer⇒ (fixnum fixnum s16vector ('a -> 'a) ('a -> fixnum fixnum) 'a -> 'a))
 (← (buffer⇒ n m ω f g α)
   (? (= n m) α
-    (∃ ((a (f α)) (s (receive (l r) (g a) (stereo-sample l r))))
-      (u32vector-set! ω n s)
-      (buffer⇒ (+ n 1) m ω f g a))))
+    (∃ ((a (f α))) 
+      (receive (l r) (g a)
+        (s16vector-set! ω n l)
+        (s16vector-set! ω (+ n 1) r)
+        (buffer⇒ (+ n 2) m ω f g a)))))
 
 (: windows ((list-of fixnum) --> (list-of (list fixnum fixnum))))
 (← (windows ω) (↓ (⇐ (λ (acc x) `(,x ,@(↓ acc) ,(list (↑ acc) x))) '(0) ω)))
 
-(: buffer-blocks (u32vector fixnum --> (list-of fill)))
+(: buffer-blocks (s16vector fixnum --> (list-of fill)))
 (← (buffer-blocks ω n)
-  (∃ ((size (/ (u32vector-length ω) n))
+  (∃ ((size (/ (s16vector-length ω) n))
       (slices (windows (ι n size size))))
     (∀ (λ (nm) (λ (f g α) (buffer⇒ (↑ nm) (↑↓ nm) ω f g α))) slices)))
 
@@ -123,35 +121,14 @@
 (: DEFAULT-STATE state)
 (← DEFAULT-STATE `((f ,I) (g ,(λ (_) (values 0 0))) (acc 0) (info ())))
 
-(: state! ('a -> void))
-(← (state! ω) (thread-specific-set! (current-thread) ω))
-
-(: state⇒ (('a -> 'b) -> void))
-(← (state⇒ f) (state! (f (thread-specific (current-thread)))))
-
-(: set-f! (('a -> 'a) -> void))
-(← (set-f! f) (state⇒ (λ (ω) (∈←→ 'f f ω))))
-
-(: set-g! (('a -> fixnum fixnum) -> void))
-(← (set-g! g) (state⇒ (λ (ω) (∈←→ 'g g ω))))
-
-(: set-acc! ('a -> void))
-(← (set-acc! acc) (state⇒ (λ (ω) (∈←→ 'acc acc ω))))
-
-(: set-info! ('a -> void))
-(← (set-info! α) (state⇒ (λ (ω) (∈←→ 'info α ω))))
-
-(: audio-info (-> audio-data))
-(← (audio-info) (∈ 'info (thread-specific (current-thread))))
-
 (: wampoo (mutex condition-variable audio-data audio -> void))
 (← (wampoo lock τ info audio)
   (letrec*
     ((writer (∈ 'writer audio))
      (closer (∈ 'closer audio))
      (blocks (∈ 'write-blocks info))
-     (bufsize (/ (∈ 'write-buf-bytes info) 4))
-     (buffer (make-u32vector bufsize 0 #f #f))
+     (bufsize (/ (∈ 'write-buf-bytes info) 2))
+     (buffer (make-s16vector bufsize 0 #f #f))
      (buffer* (make-locative buffer))
      (buffers (buffer-blocks buffer blocks))
      (▽ (λ (ω)
@@ -172,6 +149,7 @@
                (▽ (↓ ω)))))))
     (state! DEFAULT-STATE)
     (set-info! info)
+    (writer buffer*) ; lead fill
     (▽ buffers)
     (closer)
     (free-number-vector buffer)))
@@ -185,8 +163,30 @@
 (← info (audio-data 48000 300 10))
 (← ao (make-audio info))
 (print info)
-(← clock-thread (make-thread (λ () (clock CLOCK-CHANNEL (∈ 'resolution info)))))
-(← wampoo-thread (make-thread (λ () (wampoo AUDIO-LOCK CLOCK-CHANNEL info ao))))
-(thread-start! clock-thread)
-(thread-start! wampoo-thread)
-(thread-join! wampoo-thread)
+(← CLOCK-THREAD (make-thread (λ () (clock CLOCK-CHANNEL (∈ 'resolution info)))))
+(← WAMPOO-THREAD (make-thread (λ () (wampoo AUDIO-LOCK CLOCK-CHANNEL info ao))))
+(thread-start! CLOCK-THREAD)
+
+(: state! ('a -> void))
+(← (state! ω) (thread-specific-set! WAMPOO-THREAD ω))
+
+(: state⇒ (('a -> 'b) -> void))
+(← (state⇒ f) (state! (f (thread-specific WAMPOO-THREAD))))
+
+(: set-f! (('a -> 'a) -> void))
+(← (set-f! f) (state⇒ (λ (ω) (∈←→ 'f f ω))))
+
+(: set-g! (('a -> fixnum fixnum) -> void))
+(← (set-g! g) (state⇒ (λ (ω) (∈←→ 'g g ω))))
+
+(: set-acc! ('a -> void))
+(← (set-acc! acc) (state⇒ (λ (ω) (∈←→ 'acc acc ω))))
+
+(: set-info! ('a -> void))
+(← (set-info! α) (state⇒ (λ (ω) (∈←→ 'info α ω))))
+
+(: audio-info (-> audio-data))
+(← (audio-info) (∈ 'info (thread-specific WAMPOO-THREAD)))
+
+(thread-start! WAMPOO-THREAD)
+(thread-join! WAMPOO-THREAD)
